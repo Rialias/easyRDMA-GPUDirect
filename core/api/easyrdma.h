@@ -12,6 +12,7 @@
 #define _easyrdma_h_
 
 #include <stdint.h>
+#include <cstddef>
 
 #ifdef __cplusplus
 extern "C"
@@ -161,6 +162,11 @@ int32_t _RDMA_FUNC easyrdma_SetProperty(easyrdma_Session session, uint32_t prope
 int32_t _RDMA_FUNC easyrdma_GetLastErrorString(char* buffer, size_t bufferSize);
 int32_t _RDMA_FUNC easyrdma_ReleaseUserBufferRegionToIdle(easyrdma_Session session, easyrdma_InternalBufferRegion* bufferRegion);
 int32_t _RDMA_FUNC easyrdma_GetLastError(easyrdma_ErrorInfo* status);
+
+// GPU Direct RDMA functions
+int32_t _RDMA_FUNC easyrdma_GetCUDADeviceCount(int32_t* deviceCount);
+int32_t _RDMA_FUNC easyrdma_AllocateGpuMemory(void** gpuBuffer, size_t bufferSize);
+int32_t _RDMA_FUNC easyrdma_FreeGpuMemory(void* gpuBuffer);
 
 // Internal-use-only functions (for testing -- do not use)
 void _RDMA_FUNC easyrdma_testsetLastOsError(int osErrorCode);

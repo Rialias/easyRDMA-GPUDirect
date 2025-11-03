@@ -11,6 +11,8 @@
 #include "rdma/rdma_verbs.h"
 #include "EventManager.h"
 #include "ThreadUtility.h"
+#include <unistd.h>
+#include <cstdint>
 
 using namespace EasyRDMA;
 
@@ -194,6 +196,24 @@ void RdmaConnectedSession::MakeCQsNonBlocking()
 
     flags = fcntl(cm_id->send_cq_channel->fd, F_GETFL);
     HandleError(fcntl(cm_id->send_cq_channel->fd, F_SETFL, flags | O_NONBLOCK));
+}
+
+// GPU Direct RDMA memory detection
+bool RdmaConnectedSession::IsGpuDirectMemory(void* buffer)
+{
+    if (!buffer) {
+        return false;
+    }
+    
+    // Simple heuristic: Check if nvidia_peermem is available and buffer alignment suggests GPU memory
+    // In a real implementation, you'd use CUDA driver API to check if pointer is GPU memory
+    uintptr_t addr = reinterpret_cast<uintptr_t>(buffer);
+    
+    // GPU memory is typically highly aligned (4KB or more) and nvidia_peermem must be available
+    bool isAligned = (addr % 4096 == 0);  // 4KB alignment typical for GPU Direct
+    bool hasNvidiaPeerMem = (access("/sys/module/nvidia_peermem", F_OK) == 0);
+    
+    return isAligned && hasNvidiaPeerMem;
 }
 
 void RdmaConnectedSession::PollForReceive(int32_t timeoutMs)
