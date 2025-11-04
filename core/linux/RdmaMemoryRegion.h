@@ -34,18 +34,6 @@ public:
         HandleErrorFromPointer(mr);
     }
     
-    // GPU memory registration
-    RdmaMemoryRegion(rdma_cm_id* _cm_id, void* buffer, size_t length, bool useGpuDirect) :
-        cm_id(_cm_id)
-    {
-        if (useGpuDirect) {
-            mr = RegisterGpuMemory(buffer, length);
-        } else {
-            mr = rdma_reg_msgs(cm_id, buffer, length);
-        }
-        HandleErrorFromPointer(mr);
-    }
-    
     ~RdmaMemoryRegion()
     {
         if (mr) {

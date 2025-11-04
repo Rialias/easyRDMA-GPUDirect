@@ -6,6 +6,7 @@
 #include <mutex>
 #include <assert.h>
 #include <valgrind.h>
+#include <atomic>
 #include "EventManager.h"
 #include "ThreadUtility.h"
 
@@ -14,6 +15,7 @@ static std::mutex eventChannelMutex;
 static rdma_event_channel* eventChannel = nullptr;
 static boost::thread eventThread;
 static EventManager eventManager;
+static std::atomic<bool> shutdownInProgress{false};
 
 void EventChannelThread(rdma_event_channel* eventChannel)
 {
@@ -59,6 +61,21 @@ EventManager& GetEventManager()
 {
     return eventManager;
 }
+
+bool IsShuttingDown()
+{
+    return shutdownInProgress.load();
+}
+
+// Helper class to detect global shutdown
+struct ShutdownDetector
+{
+    ~ShutdownDetector()
+    {
+        shutdownInProgress.store(true);
+    }
+};
+static ShutdownDetector shutdownDetector;
 
 bool IsValgrindRunning()
 {

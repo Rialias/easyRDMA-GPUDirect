@@ -19,7 +19,11 @@ RdmaListener::RdmaListener(const RdmaAddress& _localAddress) :
 RdmaListener::~RdmaListener()
 {
     if (cm_id) {
-        GetEventManager().DestroyConnectionQueue(cm_id);
+        // Only call EventManager functions if we're not shutting down
+        // to avoid use-after-free during global destruction
+        if (!IsShuttingDown()) {
+            GetEventManager().DestroyConnectionQueue(cm_id);
+        }
         rdma_destroy_id(cm_id);
     }
 }

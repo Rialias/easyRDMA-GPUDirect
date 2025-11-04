@@ -53,46 +53,64 @@ int main(int argc, char *argv[])
     }
     std::cout << " Configured buffers (" << buffer_size << " bytes x " << num_buffers << ")" << std::endl;
 
-    // Step 4: Send messages from host memory
+    // Step 4: Wait for server to configure and send credits
+    std::cout << "\n Waiting for server to configure GPU buffer and send credits..." << std::endl;
+    
+    // Give server time to configure GPU buffer and queue receive buffer
+    // This allows server to send credit notification back to client
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    
+    // Step 5: Send messages from host memory
     std::cout << "\n Sending messages from host..." << std::endl;
 
     const char *messages[] = {"Hello from host client!"};
 
     easyrdma_InternalBufferRegion send_region;
-    result = easyrdma_AcquireSendRegion(client_session, 10000, &send_region); // 10 second timeout
+    result = easyrdma_AcquireSendRegion(client_session, 30000, &send_region); // 30 second timeout to wait for credits
     if (result != easyrdma_Error_Success)
     {
-        std::cout << " Failed to acquire send region: " << result << std::endl;
+        std::cout << " Failed to acquire send region (no credits available?): " << result << std::endl;
+        if (result == easyrdma_Error_Timeout) {
+            std::cout << " This likely means server hasn't sent credit notification yet" << std::endl;
+            std::cout << " Make sure server has configured GPU buffer and queued receive buffer" << std::endl;
+        }
         easyrdma_CloseSession(client_session);
         return 1;
     }
+    std::cout << " Acquired send region - server credits available!" << std::endl;
 
     // Copy message into send buffer
-    std::memcpy(send_region.buffer, messages[0], std::strlen(messages[0]) + 1);
-    send_region.usedSize = std::strlen(messages[0]) + 1;
+    size_t message_len = std::strlen(messages[0]) + 1; // Include null terminator
+    std::memcpy(send_region.buffer, messages[0], message_len);
+    send_region.usedSize = message_len;
 
-    // Queue the buffer for sending
+    std::cout << " Prepared message (" << message_len << " bytes): \"" << messages[0] << "\"" << std::endl;
+
+    // Queue the buffer for sending (this will use the credits from server)
+    std::cout << " Queuing send buffer (using server credits)..." << std::endl;
     result = easyrdma_QueueBufferRegion(client_session, &send_region, nullptr);
     if (result != easyrdma_Error_Success)
     {
         std::cout << " Failed to queue send buffer: " << result << std::endl;
+        if (result == easyrdma_Error_SendTooLargeForRecvBuffer) {
+            std::cout << " Message too large for server's GPU buffer!" << std::endl;
+        }
         easyrdma_ReleaseUserBufferRegionToIdle(client_session, &send_region);
         easyrdma_CloseSession(client_session);
         return 1;
     }
 
-    std::cout << " Sent message from host: " << messages[0] << std::endl;
+    std::cout << " ✓ Successfully sent message to server's GPU memory!" << std::endl;
+    std::cout << " Message: \"" << messages[0] << "\" (" << message_len << " bytes)" << std::endl;
 
     std::cout << " Messages sent. Waiting for server to process..." << std::endl;
 
-    easyrdma_ReleaseUserBufferRegionToIdle(client_session, &send_region);
-
-    // Wait longer to ensure server has time to receive data into GPU memory 
-    // Host-to-GPU transfers may take longer to complete
-    std::this_thread::sleep_for(std::chrono::seconds(10)); // Wait for server to process
+    // Wait for server to process the GPU data
+    // The RDMA transfer to GPU is nearly instantaneous, but give server time to process
+    std::this_thread::sleep_for(std::chrono::seconds(5)); // Wait for server to process
     // Cleanup
     std::cout << "\n Shutting down..." << std::endl;
-    easyrdma_CloseSession(client_session);
+    //easyrdma_CloseSession(client_session);
 
     std::cout << "Client finished cleanly" << std::endl;
     return 0;

@@ -82,4 +82,5 @@ inline void FreeAlignedMemory(void* ptr)
 
 rdma_event_channel* GetEventChannel();
 EventManager& GetEventManager();
+bool IsShuttingDown();
 bool IsValgrindRunning();
