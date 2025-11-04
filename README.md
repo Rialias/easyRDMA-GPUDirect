@@ -20,6 +20,17 @@ easyRDMA is a part of [NI-RDMA](https://www.ni.com/en-us/support/documentation/r
 
 To learn how to build, debug, and test easyRDMA, please read [CONTRIBUTING.md](./CONTRIBUTING.md).
 
+To compile:
+
+Server: g++ -g -O0 -Wall gpudirect_server.cpp -o gpudirect_server -I. -Icore -Lbuild/core -leasyrdma -lcuda -lcudart -std=c++11 -Wl,-rpath,build/core
+
+Client: g++ -fdiagnostics-color=always -g3 -O0 -DDEBUG -Wall -Wextra gpudirect_client.cpp -o gpudirect_client -I. -Icore -Lbuild/core -leasyrdma -lcuda -lcudart -std=c++11 -Wl,-rpath,build/core
+
+To run the code: Start the server first with
+
+Server:  ./gpudirect_server 192.168.30.1
+Client:  ./gpudirect_client 192.168.30.1
+
 ## Community
 
 We welcome feedback and contributions!
