@@ -13,6 +13,8 @@
 #include "ThreadUtility.h"
 #include <unistd.h>
 #include <cstdint>
+#include <chrono>
+#include <thread>
 
 using namespace EasyRDMA;
 
@@ -111,7 +113,8 @@ void RdmaConnectedSession::Destroy()
         }
         // Only call EventManager functions if we're not shutting down
         // to avoid use-after-free during global destruction
-        if (!IsShuttingDown()) {
+        if (!IsShuttingDown())
+        {
             GetEventManager().DestroyConnectionQueue(cm_id);
         }
         rdma_destroy_id(cm_id);
@@ -208,8 +211,7 @@ void RdmaConnectedSession::QueueToQp(Direction _direction, RdmaBuffer *buffer)
         // initialized either. The problem with this is that valgrind becomes unusable, because the possibly-uninitalized data taints a bunch of code paths
         // (like the credit mechanism). So to be nice for that use case, if we detect we're running under valgrind, we will initialize their memory on every
         // recv. Note that valgrind already adds so much overhead that this isn't a big deal.
-        // CRITICAL FIX: Skip memset for GPU Direct RDMA buffers - CPU cannot directly write to GPU memory!
-        if (IsValgrindRunning() && !IsGpuDirectMemory(buffer->GetPointer()))
+        if (IsValgrindRunning())
         {
             memset(buffer->GetPointer(), 0, buffer->GetSize());
         }
@@ -224,31 +226,15 @@ std::unique_ptr<RdmaMemoryRegion> RdmaConnectedSession::CreateMemoryRegion(void 
 
 void RdmaConnectedSession::MakeCQsNonBlocking()
 {
-    int flags = 0;
-    flags = fcntl(cm_id->recv_cq_channel->fd, F_GETFL);
-    HandleError(fcntl(cm_id->recv_cq_channel->fd, F_SETFL, flags | O_NONBLOCK));
-
-    flags = fcntl(cm_id->send_cq_channel->fd, F_GETFL);
-    HandleError(fcntl(cm_id->send_cq_channel->fd, F_SETFL, flags | O_NONBLOCK));
-}
-
-// GPU Direct RDMA memory detection
-bool RdmaConnectedSession::IsGpuDirectMemory(void *buffer)
-{
-    if (!buffer)
-    {
-        return false;
+    if (cm_id->recv_cq_channel) {
+        int flags = fcntl(cm_id->recv_cq_channel->fd, F_GETFL);
+        HandleError(fcntl(cm_id->recv_cq_channel->fd, F_SETFL, flags | O_NONBLOCK));
     }
 
-    // Simple heuristic: Check if nvidia_peermem is available and buffer alignment suggests GPU memory
-    // In a real implementation, you'd use CUDA driver API to check if pointer is GPU memory
-    uintptr_t addr = reinterpret_cast<uintptr_t>(buffer);
-
-    // GPU memory is typically highly aligned (4KB or more) and nvidia_peermem must be available
-    bool isAligned = (addr % 4096 == 0); // 4KB alignment typical for GPU Direct
-    bool hasNvidiaPeerMem = (access("/sys/module/nvidia_peermem", F_OK) == 0);
-
-    return isAligned && hasNvidiaPeerMem;
+    if (cm_id->send_cq_channel) {
+        int flags = fcntl(cm_id->send_cq_channel->fd, F_GETFL);
+        HandleError(fcntl(cm_id->send_cq_channel->fd, F_SETFL, flags | O_NONBLOCK));
+    }
 }
 
 void RdmaConnectedSession::PollForReceive(int32_t timeoutMs)
@@ -294,24 +280,23 @@ void RdmaConnectedSession::PollCompletionQueue(Direction _direction, ibv_wc *wc,
     ibv_cq *cq = _direction == Direction::Send ? cm_id->send_cq : cm_id->recv_cq;
     ibv_comp_channel *channel = _direction == Direction::Send ? cm_id->send_cq_channel : cm_id->recv_cq_channel;
 
-    struct ibv_cq *eventCq;
-    void *context;
     int ret;
-
     auto pollStart = std::chrono::steady_clock::now();
 
     do
     {
-        // Poll completion queue for RDMA operations
         ret = ibv_poll_cq(cq, 1, wc);
-        
-        if (ret > 0) {
-            // Completion found - log minimal info safely
-            std::cout << "RDMA completion: status=" << wc->status 
-                      << ", bytes=" << wc->byte_len << std::endl;
-        }
-        if (ret)
+
+        if (ret < 0)
+        {
+            HandleError(rdma_seterrno(-ret));
             break;
+        }
+
+        if (ret > 0)
+        {
+            break;
+        }
 
         if (blocking)
         {
@@ -323,15 +308,13 @@ void RdmaConnectedSession::PollCompletionQueue(Direction _direction, ibv_wc *wc,
             if (ret)
                 break;
 
-            // This is the special part that isn't in rdma_get_send_comp/rdma_get_recv_comp.
-            // Since we make the channel fd non-blocking, we need to call poll() on the fd here
-            // instead of expecting ibv_get_cq_event to block below. However, we want to make sure
-            // we can cancel, so we use the FdPoller.
-            if (!queueFdPoller.PollOnFd(channel->fd, -1))
+            if (!queueFdPoller.PollOnFd(channel->fd, 1000))
             {
-                RDMA_THROW(easyrdma_Error_OperationCancelled);
+                continue; // Timeout, try again
             }
 
+            struct ibv_cq *eventCq;
+            void *context;
             HandleError(ibv_get_cq_event(channel, &eventCq, &context));
             assert(eventCq == cq && context == cm_id);
             ibv_ack_cq_events(cq, 1);
@@ -348,11 +331,6 @@ void RdmaConnectedSession::PollCompletionQueue(Direction _direction, ibv_wc *wc,
             }
         }
     } while (1);
-
-    if (ret < 0)
-    {
-        HandleError(rdma_seterrno(ret));
-    }
 }
 
 void RdmaConnectedSession::SendReceiveHandlerThread(Direction _direction)
@@ -363,8 +341,24 @@ void RdmaConnectedSession::SendReceiveHandlerThread(Direction _direction)
         MakeCQsNonBlocking();
         while (IsConnected())
         {
-            PollCompletionQueue(_direction, &wc, true, 0);
-            // TRACE("Completed buffer: direction = %s, status = %d, size = %d", direction == Direction::Receive ? "Recv" : "Send", wc.status, wc.byte_len);
+            try
+            {
+                PollCompletionQueue(_direction, &wc, true, -1);
+            }
+            catch (const RdmaException &e)
+            {
+                if (e.rdmaError.GetCode() == easyrdma_Error_OperationCancelled)
+                {
+                    // This is fine, we're shutting down
+                    return;
+                }
+                else
+                {
+                    // TODO: Do real exception handling here. Since the user can register callbacks that can throw exceptions,
+                    // we may need more complex logic.
+                    continue;
+                }
+            }
             RdmaBuffer *buffer = reinterpret_cast<RdmaBuffer *>(wc.wr_id);
             RdmaError completionStatus;
             if (wc.status != IBV_WC_SUCCESS)
@@ -395,29 +389,22 @@ void RdmaConnectedSession::SendReceiveHandlerThread(Direction _direction)
     }
     catch (std::exception &e)
     {
-        // TRACE("Error in buffer completion: direction = %s, error = %s\n", direction == Direction::Receive ? "Recv" : "Send", e.what());
-        //  No-op, silently exit thread. Normal errors are handled within the completion methods.
+        // TODO: Real error handling
     }
 }
 
 void RdmaConnectedSession::SetupQueuePair()
 {
     assert(!createdQp);
+    
     ibv_qp_init_attr qp_init = {};
-    // The sizes below are somewhat arbitrary. They will limit the
-    // maximum number of queued send/recv requests allowed. There are ways
-    // to query the maximum allowed, but it can get complicated with how resources
-    // might be shared. On Windows we set this to the maximum returned, but we haven't
-    // added code to get that on Linux. We can revisit raising these or querying the max
-    // if this becomes an issue. There are not many practical applications for having
-    // this many concurrently queued requests.
     qp_init.cap.max_send_wr = 1024;
     qp_init.cap.max_recv_wr = 1024;
-    // We always use a single buffer per request
     qp_init.cap.max_recv_sge = 1;
     qp_init.cap.max_send_sge = 1;
     qp_init.qp_type = IBV_QPT_RC;
     qp_init.qp_context = cm_id;
+    
     HandleError(rdma_create_qp(cm_id, nullptr, &qp_init));
     createdQp = true;
 }

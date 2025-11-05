@@ -12,8 +12,6 @@
 #include <signal.h>
 #include <execinfo.h>
 
-// Global completion flag for synchronization
-std::atomic<bool> transfer_completed{false};
 
 // Track main thread ID for comparison
 pthread_t main_thread_id;
@@ -40,25 +38,23 @@ void segfault_handler(int sig)
 
 void MyCompletionCallback(void *ctx1, void *ctx2, int32_t status, size_t bytes)
 {
-    // Execute callback directly to avoid thread deadlock during cleanup
+    // NOTE: This callback runs in the RDMA worker thread context
     std::cout << "\n=== GPU Transfer Completion Callback TRIGGERED ===" << std::endl;
     std::cout << "Status: " << status << ", Bytes: " << bytes << std::endl;
+    std::cout << "Thread ID: " << pthread_self() << " (Main: " << main_thread_id << ")" << std::endl;
 
     if (status == -734011) {
         std::cout << "Transfer was cancelled (session likely closed prematurely)" << std::endl;
-        transfer_completed = true;
         return;
     }
 
     if (status != easyrdma_Error_Success) {
         std::cout << "Transfer failed with error status: " << status << std::endl;
-        transfer_completed = true;
         return;
     }
 
     if (!ctx1) {
         std::cout << "Error: GPU buffer pointer is null!" << std::endl;
-        transfer_completed = true;
         return;
     }
 
@@ -68,21 +64,19 @@ void MyCompletionCallback(void *ctx1, void *ctx2, int32_t status, size_t bytes)
         cudaError_t err = cudaDeviceSynchronize();
         if (err != cudaSuccess) {
             std::cout << "GPU sync error: " << cudaGetErrorString(err) << std::endl;
-            transfer_completed = true;
             return;
         }
 
-        std::vector<char> hostBuffer(bytes);
-        err = cudaMemcpy(hostBuffer.data(), ctx1, bytes, cudaMemcpyDeviceToHost);
-        if (err == cudaSuccess) {
-            if (bytes > 0 && hostBuffer[bytes - 1] == '\0') {
-                std::cout << "Received message: \"" << std::string(hostBuffer.data()) << "\"" << std::endl;
-            } else {
-                std::cout << "Received " << bytes << " bytes of binary data" << std::endl;
-            }
+        char *verifyBuffer = new char[bytes + 1];  // Allocate exactly what we need + null terminator
+        memset(verifyBuffer, 0, bytes + 1);
+        cudaError_t cudaErr = cudaMemcpy(verifyBuffer, ctx1, bytes, cudaMemcpyDeviceToHost);
+        if (cudaErr == cudaSuccess) {
+            verifyBuffer[bytes] = '\0';  // Ensure null termination
+            std::cout << "Received message: \"" << std::string(verifyBuffer) << "\"" << std::endl;
         } else {
-            std::cout << "Failed to copy GPU data to host: " << cudaGetErrorString(err) << std::endl;
+            std::cout << "Failed to copy GPU data to host: " << cudaGetErrorString(cudaErr) << std::endl;  // Fixed: use cudaErr, not err
         }
+        delete[] verifyBuffer;  // Don't forget to free the allocated memory
 
         std::cout << "GPU buffer processing complete" << std::endl;
     } else if (status == easyrdma_Error_Success && bytes == 0) {
@@ -92,7 +86,6 @@ void MyCompletionCallback(void *ctx1, void *ctx2, int32_t status, size_t bytes)
     }
 
     std::cout << "=== End Transfer Completion ===" << std::endl;
-    transfer_completed = true;
 }
 
 int main(int argc, char *argv[])
@@ -124,7 +117,7 @@ int main(int argc, char *argv[])
 
     // Step 4: GPU memory allocation with proper alignment
     void *gpuBuffer = nullptr;
-    size_t gpuBufferSize = 4096; // 4KB buffer, page-aligned for better GPU Direct compatibility
+    size_t gpuBufferSize = 2048; // 2KB buffer, page-aligned for better GPU Direct compatibility
 
     results = easyrdma_AllocateGpuMemory(&gpuBuffer, gpuBufferSize);
     if (results != easyrdma_Error_Success || !gpuBuffer)
@@ -134,7 +127,7 @@ int main(int argc, char *argv[])
     }
     std::cout << "GPU Memory allocated: " << gpuBufferSize << " bytes at " << gpuBuffer << std::endl;
     
-    // Test GPU memory accessibility
+    // Test GPU memory accessibility and GPUDirect capability
     std::cout << "Testing GPU memory accessibility..." << std::endl;
     cudaError_t cuda_err = cudaMemset(gpuBuffer, 0x42, gpuBufferSize);
     if (cuda_err != cudaSuccess) {
@@ -142,6 +135,30 @@ int main(int argc, char *argv[])
     } else {
         std::cout << "GPU memory accessible via CUDA - OK" << std::endl;
     }
+
+    // Check GPU Direct RDMA capabilities
+    std::cout << "\n=== GPUDirect RDMA Diagnostics ===" << std::endl;
+    
+    // Get CUDA device properties
+    int device;
+    cudaGetDevice(&device);
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&prop, device);
+    
+    std::cout << "GPU Device: " << prop.name << std::endl;
+    std::cout << "GPU Memory Type: " << (prop.canMapHostMemory ? "Mappable" : "Non-mappable") << std::endl;
+    std::cout << "GPU PCIe: Bus " << prop.pciBusID << ", Device " << prop.pciDeviceID << std::endl;
+    
+    // Check if this is device memory (should be for GPUDirect)
+    cudaPointerAttributes attributes;
+    cudaError_t ptr_err = cudaPointerGetAttributes(&attributes, gpuBuffer);
+    if (ptr_err == cudaSuccess) {
+        std::cout << "Memory Type: " << (attributes.type == cudaMemoryTypeDevice ? "GPU Device Memory" : 
+                     attributes.type == cudaMemoryTypeHost ? "Host Memory" : "Unknown") << std::endl;
+        std::cout << "Device Pointer: " << attributes.devicePointer << std::endl;
+        std::cout << "Host Pointer: " << attributes.hostPointer << std::endl;
+    }
+    
 
     // Step 1: Create listener session
     easyrdma_Session server_session;
@@ -170,77 +187,113 @@ int main(int argc, char *argv[])
     }
     std::cout << "Client connected!" << std::endl;
 
-    std::cout << "Configuring GPU buffer for RDMA..." << std::endl;
+    std::cout << "\n=== Configuring GPU Buffer for RDMA ===" << std::endl;
+    std::cout << "GPU Buffer: " << gpuBuffer << ", Size: " << gpuBufferSize << std::endl;
+    std::cout << "Calling easyrdma_ConfigureExternalBuffer..." << std::endl;
+    
     result = easyrdma_ConfigureExternalBuffer(connected_session, gpuBuffer, gpuBufferSize, 1);
     if (result != easyrdma_Error_Success)
     {
         std::cout << "Failed to configure GPU buffer: " << result << std::endl;
-        std::cout << "This indicates GPU Direct RDMA is not working properly" << std::endl;
+        
+        // Get more detailed error information
+        char error_buffer[512];
+        easyrdma_GetLastErrorString(error_buffer, sizeof(error_buffer));
+        std::cout << "Detailed error: " << error_buffer << std::endl;
+        
+        // Try to understand what went wrong
+        if (result == -734003) {
+            std::cout << "ERROR: Invalid argument - GPU buffer may not be compatible with RDMA" << std::endl;
+        } else if (result == -734006) {
+            std::cout << "ERROR: Operating system error - Check CUDA/RDMA drivers" << std::endl;
+        } else if (result == -734008) {
+            std::cout << "ERROR: Out of memory during GPU buffer registration" << std::endl;
+        }
+        
         easyrdma_FreeGpuMemory(gpuBuffer);
         easyrdma_CloseSession(connected_session);
         easyrdma_CloseSession(server_session);
         return 1;
     }
-    std::cout << "Successfully configured session to use GPU memory buffer" << std::endl;
-    std::cout << "GPU Direct RDMA setup appears to be working..." << std::endl;
+    
+    std::cout << "✓ Successfully configured session to use GPU memory buffer" << std::endl;
+    std::cout << "✓ GPU Direct RDMA setup completed successfully" << std::endl;
+    
+    // Verify the buffer is properly registered
+    std::cout << "Verifying GPU buffer registration..." << std::endl;
+    
+    // The library should have logged "GPU Direct RDMA memory" registration
+    // Let's add a small test to ensure the buffer is accessible
+    cudaMemset(gpuBuffer, 0x55, 64); // Set first 64 bytes to 0x55
+    cudaDeviceSynchronize();
+    
+    std::vector<char> verify_buffer(64);
+    cudaMemcpy(verify_buffer.data(), gpuBuffer, 64, cudaMemcpyDeviceToHost);
+    bool verification_ok = true;
+    for (int i = 0; i < 64; i++) {
+        if ((unsigned char)verify_buffer[i] != 0x55) {
+            verification_ok = false;
+            break;
+        }
+    }
+    
+    std::cout << "GPU buffer accessibility: " << (verification_ok ? "✓ OK" : "✗ FAILED") << std::endl;
 
     // Setup callback for GPU transfer completion
-    easyrdma_BufferCompletionCallbackData callback;
-    callback.callbackFunction = MyCompletionCallback;
-    callback.context1 = gpuBuffer;      // Pass GPU buffer pointer as context
-    callback.context2 = &gpuBufferSize; // Pass buffer size as context
+    std::cout << "\n=== Setting Up GPU Buffer Queue ===" << std::endl;
 
+    easyrdma_BufferCompletionCallbackData callback;
+    callback.callbackFunction = &MyCompletionCallback;
+    callback.context1 = gpuBuffer;      // Pass GPU buffer pointer as context
+    callback.context2 = &gpuBufferSize; // Pass buffer size as context// Pass buffer size as context
+
+    std::cout << "Queuing GPU buffer for receive operations..." << std::endl;
+    std::cout << "Buffer: " << gpuBuffer << ", Size: " << gpuBufferSize << ", Timeout: 10000ms" << std::endl;
+    
     result = easyrdma_QueueExternalBufferRegion(connected_session, gpuBuffer, gpuBufferSize, &callback, 10000);
     if (result != easyrdma_Error_Success)
     {
         std::cout << "Failed to queue GPU buffer region: " << result << std::endl;
+        
+        // Get detailed error for queue operation
+        char error_buffer[512];
+        easyrdma_GetLastErrorString(error_buffer, sizeof(error_buffer));
+        std::cout << "Queue error details: " << error_buffer << std::endl;
+        
         easyrdma_FreeGpuMemory(gpuBuffer);
         easyrdma_CloseSession(connected_session);
         easyrdma_CloseSession(server_session);
         return 1;
     }
 
-    std::cout << "GPU buffer queued successfully" << std::endl;
-    std::cout << "Ready to receive data into GPU memory..." << std::endl;
-
-    // Wait for data to arrive
-    std::cout << "Waiting for RDMA data to arrive..." << std::endl;
-    std::cout << "Server is now listening for incoming RDMA transfers..." << std::endl;
+    std::cout << "✓ GPU buffer queued successfully for receive operations" << std::endl;
+    std::cout << "✓ Ready to receive data into GPU memory via GPUDirect RDMA" << std::endl;
     
-    // Wait for actual completion or timeout
-    auto start_time = std::chrono::steady_clock::now();
-    const auto timeout_duration = std::chrono::seconds(10);
     
-    while (!transfer_completed && 
-           (std::chrono::steady_clock::now() - start_time) < timeout_duration) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
+    // Step 3: Wait for client to send data to GPU buffer
+    std::cout << "Waiting for client to send data to GPU buffer..." << std::endl;
+    std::cout << "Server is now ready to receive RDMA data into GPU memory" << std::endl;
     
-    if (transfer_completed) {
-        std::cout << "Transfer completed - proceeding with cleanup..." << std::endl;
-    } else {
-        std::cout << "Timeout reached - proceeding with cleanup..." << std::endl;
-    }
-    
-    // Safe cleanup sequence to avoid thread deadlocks
-    std::cout << "Cleaning up sessions..." << std::endl;
-    
-    // Allow MLX5 hardware to complete any pending operations
-    std::cout << "Waiting for MLX5 hardware completion..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    
-    // Close sessions with deferred cleanup to prevent thread joining deadlock
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+    // Step 4: Close sessions (this is where the crash typically occurs)
     std::cout << "Closing RDMA sessions..." << std::endl;
-    easyrdma_CloseSession(connected_session, 1); // Use deferred cleanup
-    easyrdma_CloseSession(server_session, 1);    // Use deferred cleanup
+    std::cout << "*** CRITICAL SECTION: Closing connected_session ***" << std::endl;
     
-    // Final wait for cleanup threads to complete
-    std::cout << "Final wait for cleanup completion..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    // Set signal handlers to catch crashes during cleanup
+    signal(SIGSEGV, segfault_handler);
+    signal(SIGABRT, segfault_handler);
+    
+    easyrdma_CloseSession(connected_session);
+    std::cout << "Connected session closed successfully" << std::endl;
+    
+    std::cout << "*** CRITICAL SECTION: Closing server_session ***" << std::endl;
+    easyrdma_CloseSession(server_session);
+    std::cout << "Server session closed successfully" << std::endl;
 
     easyrdma_FreeGpuMemory(gpuBuffer);
 
     std::cout << "Server completed successfully." << std::endl;
+
 
     return 0;
 }

@@ -44,7 +44,19 @@ int main(int argc, char *argv[])
     // Step 3: Configure host memory buffers for sending
     size_t buffer_size = 1024; // 1KB buffers
     size_t num_buffers = 1;    // Just 1 buffer
-    result = easyrdma_ConfigureBuffers(client_session, buffer_size, num_buffers);
+
+    // Allocate host memory for sender
+    char *hostBuffer = new char[buffer_size];
+    const char *message = "GPU Direct RDMA WRITE: Host→GPU Direct!";
+    strcpy(hostBuffer, message);
+    int messageLength = strlen(message) + 1;
+    std::cout << "Host buffer allocated and initialized for sending" << std::endl;
+
+    easyrdma_InternalBufferRegion send_region;
+    send_region.buffer = hostBuffer;
+    send_region.bufferSize = buffer_size;
+    send_region.usedSize = messageLength;
+    result = easyrdma_ConfigureBuffers(client_session, send_region.bufferSize, num_buffers);
     if (result != easyrdma_Error_Success)
     {
         std::cout << " Failed to configure buffers: " << result << std::endl;
@@ -63,9 +75,8 @@ int main(int argc, char *argv[])
     // Step 5: Send messages from host memory
     std::cout << "\n Sending messages from host..." << std::endl;
 
-    const char *messages[] = {"Hello from host client!"};
 
-    easyrdma_InternalBufferRegion send_region;
+    //easyrdma_InternalBufferRegion send_region;
     result = easyrdma_AcquireSendRegion(client_session, 30000, &send_region); // 30 second timeout to wait for credits
     if (result != easyrdma_Error_Success)
     {
@@ -80,11 +91,11 @@ int main(int argc, char *argv[])
     std::cout << " Acquired send region - server credits available!" << std::endl;
 
     // Copy message into send buffer
-    size_t message_len = std::strlen(messages[0]) + 1; // Include null terminator
+    /*size_t message_len = std::strlen(messages[0]) + 1; // Include null terminator
     std::memcpy(send_region.buffer, messages[0], message_len);
     send_region.usedSize = message_len;
 
-    std::cout << " Prepared message (" << message_len << " bytes): \"" << messages[0] << "\"" << std::endl;
+    std::cout << " Prepared message (" << message_len << " bytes): \"" << messages[0] << "\"" << std::endl; */
 
     // Queue the buffer for sending (this will use the credits from server)
     std::cout << " Queuing send buffer (using server credits)..." << std::endl;
@@ -101,16 +112,16 @@ int main(int argc, char *argv[])
     }
 
     std::cout << " ✓ Successfully sent message to server's GPU memory!" << std::endl;
-    std::cout << " Message: \"" << messages[0] << "\" (" << message_len << " bytes)" << std::endl;
+    std::cout << " Message: \"" << hostBuffer << "\" (" << messageLength << " bytes)" << std::endl;
 
     std::cout << " Messages sent. Waiting for server to process..." << std::endl;
 
     // Wait for server to process the GPU data
     // The RDMA transfer to GPU is nearly instantaneous, but give server time to process
-    std::this_thread::sleep_for(std::chrono::seconds(5)); // Wait for server to process
+    std::this_thread::sleep_for(std::chrono::seconds(10)); // Wait for server to process
     // Cleanup
     std::cout << "\n Shutting down..." << std::endl;
-    //easyrdma_CloseSession(client_session);
+    easyrdma_CloseSession(client_session);
 
     std::cout << "Client finished cleanly" << std::endl;
     return 0;

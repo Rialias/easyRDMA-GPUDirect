@@ -29,8 +29,7 @@ protected:
     void SendReceiveHandlerThread(Direction _direction);
     void PollCompletionQueue(Direction _direction, ibv_wc* wc, bool blocking, int32_t nonBlockingPollTimeoutMs);
     void MakeCQsNonBlocking();
-    bool PollGpuDirectCompletion(Direction _direction, ibv_wc* wc);  // Minimal GPU Direct RDMA fix
-    bool IsGpuDirectMemory(void* buffer);  // GPU Direct RDMA memory detection
+
     void PostConnect() override;
     void PostConfigure() override;
     void SetupQueuePair() override;
