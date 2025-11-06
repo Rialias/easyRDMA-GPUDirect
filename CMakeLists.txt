@@ -20,3 +20,5 @@ FetchContent_Declare(
 # Tests
 add_subdirectory(unit_tests)
 add_subdirectory(tests)
+# Examples
+add_subdirectory(examples)

@@ -11,6 +11,7 @@
 #include "easyrdma.h"
 
 #include "api/errorhandling.h"
+#include <cuda_runtime.h>
 
 using namespace EasyRDMA;
 
@@ -426,6 +427,81 @@ int32_t _RDMA_FUNC easyrdma_SetProperty(easyrdma_Session session, uint32_t prope
     return status.GetCode();
 }
 
+// GPU Direct RDMA functions
+int32_t _RDMA_FUNC easyrdma_GetCUDADeviceCount(int32_t* deviceCount)
+{
+    RdmaError status;
+    try {
+        if (!deviceCount) {
+            RDMA_THROW(easyrdma_Error_InvalidArgument);
+        }
+        
+        // Simple CUDA device check
+        FILE* proc = popen("nvidia-smi -L 2>/dev/null | wc -l", "r");
+        if (proc) {
+            int count = 0;
+            if (fscanf(proc, "%d", &count) == 1) {
+                *deviceCount = count;
+            } else {
+                *deviceCount = 0;
+            }
+            pclose(proc);
+        } else {
+            *deviceCount = 0;
+        }
+    }
+    API_CATCH_EXCEPTION(status);
+    UpdateLastError(status);
+    return status.GetCode();
+}
+
+int32_t _RDMA_FUNC easyrdma_AllocateGpuMemory(void** gpuBuffer, size_t bufferSize)
+{
+    RdmaError status;
+    try {
+        if (!gpuBuffer || bufferSize == 0) {
+            RDMA_THROW(easyrdma_Error_InvalidArgument);
+        }
+        
+        // Try proper CUDA memory allocation first
+        cudaError_t cudaResult = cudaMalloc(gpuBuffer, bufferSize);
+        if (cudaResult == cudaSuccess) {
+            // Real GPU memory allocated successfully!
+            return easyrdma_Error_Success;
+        } else {
+            RDMA_THROW(easyrdma_Error_OperationNotSupported);
+            printf("CUDA allocation failed: %s, falling back to aligned system memory\n", cudaGetErrorString(cudaResult));
+        } 
+
+    }
+    API_CATCH_EXCEPTION(status);
+    UpdateLastError(status);
+    return status.GetCode();
+}
+
+int32_t _RDMA_FUNC easyrdma_FreeGpuMemory(void* gpuBuffer)
+{
+    RdmaError status;
+    try {
+        if (!gpuBuffer) {
+            RDMA_THROW(easyrdma_Error_InvalidArgument);
+        }
+        // Try CUDA free first - if this is real GPU memory
+        cudaError_t cudaResult = cudaFree(gpuBuffer);
+        if (cudaResult == cudaSuccess) {
+            return easyrdma_Error_Success;
+        }
+        else
+        {
+            RDMA_THROW(easyrdma_Error_OperationNotSupported);
+        }
+    }
+    API_CATCH_EXCEPTION(status);
+    UpdateLastError(status);
+    return status.GetCode();
+}
+
+
 void _RDMA_FUNC easyrdma_testsetLastOsError(int osErrorCode)
 {
     RdmaError status;
@@ -439,3 +515,4 @@ void _RDMA_FUNC easyrdma_testsetLastOsError(int osErrorCode)
     API_CATCH_EXCEPTION(status);
     UpdateLastError(status);
 }
+
