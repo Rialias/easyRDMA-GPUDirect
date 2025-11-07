@@ -113,7 +113,6 @@ int main(int argc, char *argv[])
         std::string message(static_cast<char *>(receive_region.buffer), receive_region.usedSize);
         std::cout << "Message " << (msg_count + 1) << ": \"" << message << "\" (" << receive_region.usedSize << " bytes)" << std::endl;
 
-
         // Release the receive buffer
         easyrdma_ReleaseReceivedBufferRegion(connected_session, &receive_region);
     }

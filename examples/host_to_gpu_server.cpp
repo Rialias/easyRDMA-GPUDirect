@@ -57,7 +57,7 @@ int main(int argc, char *argv[])
     std::cout << "=== GPUDirect RDMA Server (Host-to-GPU Receiver) ===" << std::endl;
 
     // Default settings
-    const char *server_ip = (argc > 1) ? argv[1] : "192.168.30.1"; // FIX: Use working interface
+    const char *server_ip = (argc > 1) ? argv[1] : "192.168.30.1"; 
     uint16_t port = (argc > 2) ? std::stoi(argv[2]) : 12345;
 
     std::cout << "Server: " << server_ip << ":" << port << std::endl;

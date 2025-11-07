@@ -20,6 +20,10 @@ include_directories(. .. ../core ../core/api)
 find_library(CUDA_LIB cuda PATHS /usr/local/cuda/lib64 /usr/lib/x86_64-linux-gnu)
 find_library(CUDART_LIB cudart PATHS /usr/local/cuda/lib64 /usr/lib/x86_64-linux-gnu)
 
+# Find InfiniBand libraries
+find_library(IBV_LIB ibverbs PATHS /usr/lib/x86_64-linux-gnu /usr/lib64)
+find_library(MLX5_LIB mlx5 PATHS /usr/lib/x86_64-linux-gnu /usr/lib64)
+
 # Create executables for each example source file
 foreach(source_file ${EXAMPLE_SOURCES})
     get_filename_component(exe_name ${source_file} NAME_WE)
@@ -34,6 +38,14 @@ foreach(source_file ${EXAMPLE_SOURCES})
         # Add CUDA libraries for GPU examples (simple library linking)
         if(CUDA_LIB AND CUDART_LIB)
             target_link_libraries(${exe_name} ${CUDA_LIB} ${CUDART_LIB})
+        endif()
+        
+        # Add InfiniBand libraries for direct ibv usage
+        if(IBV_LIB)
+            target_link_libraries(${exe_name} ${IBV_LIB})
+        endif()
+        if(MLX5_LIB)
+            target_link_libraries(${exe_name} ${MLX5_LIB})
         endif()
         
         # Add runtime library path and allow shared library dependencies

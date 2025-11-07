@@ -35,10 +35,13 @@ The GPU examples demonstrate the integration of GPUDirect RDMA with easyRDMA:
 - **`gpu_to_host_client.cpp`**: Uses GPU memory to send data from the client
 - **`gpu_to_host_server.cpp`**: Receives data into internal host memory at the server
 
+- **`host_to_gpu_client.cpp`**: Uses internal system memory to send messages from the client  
 - **`externalhost_to_gpu_client.cpp`**: Uses external system memory to send messages from the client  
-- **`externalhost_to_gpu_server.cpp`**: Receives data into GPU memory at the server
+- **`host_to_gpu_server.cpp`**: Receives data into GPU memory at the server
 
-**GPU-to-GPU Transfer**: You can test GPU-to-GPU transfers by pairing `gpu_to_host_client.cpp` (GPU sender) with `externalhost_to_gpu_server.cpp` (GPU receiver).
+**GPU-to-GPU Transfer**: You can test GPU-to-GPU transfers by pairing `gpu_to_host_client.cpp` (GPU sender) with `host_to_gpu_server.cpp` (GPU receiver).
+
+**`gpudirect_rdma_host_gpu_loopback`**: This is an loopback example for GPU Direct RDMA with the low level ibverbs (not using easyRDMA)
 
 ## Compile and Run
 
